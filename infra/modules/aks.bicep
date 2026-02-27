@@ -31,7 +31,7 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-01-01' = {
 
     // ── 네트워크 설정 ──
     networkProfile: {
-      networkPlugin: 'azure'
+      networkPlugin: 'none'
       networkPolicy: 'calico'
       serviceCidr: '10.0.0.0/16'
       dnsServiceIP: '10.0.0.10'
@@ -45,8 +45,8 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-01-01' = {
         count: nodeCount
         vmSize: vmSize
         mode: 'System'
-        osType: 'Linux'
-        osSKU: 'AzureLinux'
+        osType: 'Windows'
+        osSKU: 'Windows2022'
         enableAutoScaling: environment == 'prd'
         minCount: environment == 'prd' ? 2 : null
         maxCount: environment == 'prd' ? 5 : null
