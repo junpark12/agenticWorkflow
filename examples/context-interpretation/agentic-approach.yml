@@ -1,0 +1,87 @@
+# ✅ Agentic Workflow 방식: Context Interpretation 기반 이슈 트리아지
+#
+# 이것은 실제 작성하는 파일이 아니다!
+# 실제로는 .github/agents/issue-triage.agent.md 만 작성하면 된다.
+# `gh aw compile` 명령이 이 .lock.yml을 자동 생성한다.
+#
+# === 실제 동작 구조 ===
+#
+# [작성자가 하는 일]
+#   .github/agents/issue-triage.agent.md 작성 (마크다운 + frontmatter)
+#     ↓
+#   gh aw compile
+#     ↓
+#   .github/agents/issue-triage.agent.lock.yml 자동 생성
+#
+# [.lock.yml 내부에 자동 생성되는 3개 Job]
+#
+#   Job 1: agent (read-only)
+#     → AI 에이전트가 이슈를 읽고 맥락을 해석
+#     → "이 이슈에 bug 라벨을 붙이고, priority:high를 설정하겠다"는
+#       구조화된 출력(structured output)만 생성
+#     → 직접 쓰기 권한 없음!
+#
+#   Job 2: threat-detection (자동)
+#     → 에이전트 출력을 스캔하여 보안 위협 검사
+#     → prompt injection, secret leak, 악성 코드 패치 탐지
+#
+#   Job 3: safe-outputs (write 권한)
+#     → 검증된 출력만 실제로 적용 (라벨 추가, 코멘트 작성 등)
+#     → frontmatter의 safe-outputs 정책에 따라 허용된 것만 실행
+#
+# 핵심 포인트:
+#   - safe-outputs는 별도 step/action이 아니라 frontmatter에 선언하는 "정책"
+#   - 컴파일러가 이 정책을 기반으로 권한 분리된 Job을 자동 생성
+#   - 에이전트는 절대 repo에 직접 쓰지 못함 (Plan trust 계층)
+
+# ──────────────────────────────────────────────
+# 아래는 .lock.yml 이 내부적으로 생성하는 구조의 개념적 표현이다.
+# 실제 .lock.yml은 더 복잡하고 SHA 고정, 스키마 검증 등이 포함된다.
+# ──────────────────────────────────────────────
+
+name: Agentic Issue Triage
+
+on:
+  issues:
+    types: [opened, edited]
+  workflow_dispatch:  # gh aw compile이 자동으로 수동 트리거도 추가
+
+jobs:
+  # ── Job 1: 에이전트 실행 (read-only) ──
+  agent:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read        # 읽기만! 쓰기 없음
+    outputs:
+      safe-output: ${{ steps.run.outputs.result }}
+    steps:
+      - name: Run AI Agent
+        id: run
+        # 컴파일러가 생성한 에이전트 실행 설정
+        # AI가 issue-triage.agent.md의 자연어 지시사항을 읽고
+        # 이슈의 전체 맥락을 해석하여 분류 결과를 structured output으로 생성
+        run: echo "에이전트가 맥락을 해석하고 결과를 JSON으로 출력"
+
+  # ── Job 2: 위협 탐지 (자동 생성) ──
+  threat-detection:
+    needs: agent
+    runs-on: ubuntu-latest
+    steps:
+      - name: Scan agent output
+        # 에이전트 출력에서 prompt injection, secret leak 등 검사
+        run: echo "보안 스캔 수행"
+
+  # ── Job 3: safe-outputs 적용 (write 권한) ──
+  apply-safe-outputs:
+    needs: [agent, threat-detection]
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write       # 여기서만 쓰기 권한 부여
+    steps:
+      - name: Apply verified outputs
+        # frontmatter의 safe-outputs 정책에 따라:
+        #   - 허용된 라벨만 추가 (bug, enhancement, priority:* 등)
+        #   - 코멘트는 500자 이내로 제한
+        #   - 그 외 동작은 차단
+        run: echo "검증된 라벨과 코멘트만 적용"

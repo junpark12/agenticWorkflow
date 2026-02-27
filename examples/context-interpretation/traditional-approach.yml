@@ -1,0 +1,55 @@
+# ❌ 전통적 방식: 키워드 기반 이슈 라벨링
+# 이 방식은 "Context interpretation"이 불가능하다.
+#
+# 실패 사례:
+#   "이것은 bug가 아닙니다" → bug 라벨 (오분류)
+#   "feature flag 에러"    → enhancement 라벨 (오분류)
+#   "앱이 멈춤"            → 라벨 없음 (누락)
+
+name: Traditional Issue Labeler
+on:
+  issues:
+    types: [opened]
+
+jobs:
+  label-issue:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const text = `${issue.title} ${issue.body || ''}`.toLowerCase();
+            const labels = [];
+
+            // 단순 키워드 매칭 - 맥락을 전혀 고려하지 않음
+            const rules = [
+              { keywords: ['bug', 'error', 'crash', 'broken'], label: 'bug' },
+              { keywords: ['feature', 'enhancement', 'request', 'suggest'], label: 'enhancement' },
+              { keywords: ['question', 'how to', 'help'], label: 'question' },
+              { keywords: ['docs', 'documentation', 'typo'], label: 'documentation' },
+            ];
+
+            for (const rule of rules) {
+              if (rule.keywords.some(kw => text.includes(kw))) {
+                labels.push(rule.label);
+              }
+            }
+
+            // 문제점 1: "이것은 bug가 아닙니다" → bug로 분류됨 (부정 문맥 무시)
+            // 문제점 2: "feature flag 에러" → enhancement로 분류됨 (복합 문맥 무시)
+            // 문제점 3: 여러 키워드 매칭 시 충돌 → bug + enhancement 동시에 붙음
+            // 문제점 4: 우선순위 판단 불가
+            // 문제점 5: 담당 영역 추론 불가
+
+            if (labels.length > 0) {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                labels: [...new Set(labels)]  // 중복 제거
+              });
+            }
+
+            // 결과: 정확도가 낮고, 규칙을 계속 추가해야 하며,
+            //        새로운 패턴에 대응할 수 없다.
