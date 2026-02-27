@@ -46,8 +46,55 @@ gh extension install github/gh-aw    # 1. CLI 설치
 gh aw init                            # 2. 레포 초기화
 # .github/workflows/*.md 작성         # 3. 워크플로우 작성
 gh aw compile                         # 4. .md → .lock.yml 컴파일
-git add . && git push                 # 5. 커밋 & 푸시 (.md + .lock.yml 둘 다)
-gh aw run issue-triage                # 6. 수동 실행 (테스트)
+gh aw secrets bootstrap               # 5. 필요한 시크릿 확인 & 설정
+git add . && git push                 # 6. 커밋 & 푸시 (.md + .lock.yml 둘 다)
+gh aw run issue-triage                # 7. 수동 실행 (테스트)
+```
+
+## 인증 설정 (필수)
+
+> 공식 문서: https://github.github.com/gh-aw/reference/auth/
+
+모든 AI 엔진은 GitHub Actions 시크릿 설정이 필요하다.
+`engine:`을 지정하지 않으면 기본값 `copilot`이 사용된다.
+
+### 엔진별 시크릿
+
+| 엔진 | 시크릿 이름 | 값 |
+|------|-----------|-----|
+| `copilot` (기본) | `COPILOT_GITHUB_TOKEN` | GitHub Fine-grained PAT |
+| `claude` | `ANTHROPIC_API_KEY` | Anthropic API 키 |
+| `codex` | `OPENAI_API_KEY` | OpenAI API 키 |
+| `gemini` | `GEMINI_API_KEY` | Google AI Studio API 키 |
+
+### Copilot 엔진 설정 방법
+
+1. **Fine-grained PAT 생성**
+   - https://github.com/settings/personal-access-tokens/new 에서 생성
+   - Resource owner: **개인 계정** (조직 아님)
+   - Repository access: **Public repositories** (private repo에도 이렇게 설정해야 함)
+   - Permissions → Account permissions → **Copilot Requests: Read**
+   - 토큰 소유자에게 **활성 Copilot 라이선스**가 있어야 함
+
+2. **레포 시크릿에 추가**
+   ```bash
+   gh aw secrets set COPILOT_GITHUB_TOKEN --value "<생성한-PAT>"
+   ```
+
+3. **확인**
+   ```bash
+   gh aw secrets bootstrap    # 워크플로우별 필요 시크릿 자동 확인
+   ```
+
+### 엔진 지정 방법 (frontmatter)
+
+```yaml
+---
+engine: copilot    # GitHub Copilot (기본값, 생략 가능)
+engine: claude     # Anthropic Claude
+engine: codex      # OpenAI Codex
+engine: gemini     # Google Gemini
+---
 ```
 
 ## 컴파일 후 생성되는 .lock.yml의 3-Job 구조
@@ -197,6 +244,136 @@ gh aw compile 실행 시:
 - Guardrails (frontmatter): 최소 권한, 도구 허용 목록, 네트워크 허용 목록
 - Imports: 재사용 가능한 컴포넌트를 버전 고정하여 가져오기
 - MCP servers: 전문 도구(Terraform 등)를 에이전트에 연결
+
+---
+
+## 예제: Judgment Calls (인프라 PR 위험도 판단)
+
+"Judgment calls"란 **정해진 규칙이 없는 상황에서 상황에 맞게 판단을 내리는** 능력이다.
+Context Interpretation이 "이게 뭐냐" (분류)라면, Judgment Calls는 "어떻게 할 것이냐" (의사결정)이다.
+
+### 시나리오
+
+`infra/` 하위 Bicep 파일이 변경되는 PR이 올라오면, 에이전트가 변경 내용을 분석하여
+**운영 환경에 미치는 위험도를 판단**하고 라벨을 부여한다.
+
+실제 워크플로우: [`.github/workflows/infra-pr-review.md`](.github/workflows/infra-pr-review.md)
+
+### 동작 흐름
+
+```
+PR 생성 (infra/**/*.bicep 변경)
+  │
+  ▼
+에이전트가 PR diff 분석
+  │
+  ├─ networkPolicy 제거?         → 🔴 risk:critical
+  ├─ enablePrivateCluster: false? → 🔴 risk:critical
+  ├─ VM 크기 축소?               → 🟠 risk:high
+  ├─ K8s 버전 업그레이드?         → 🟡 risk:medium
+  └─ 태그/코멘트만 변경?          → 🟢 risk:low
+  │
+  ▼
+safe-outputs:
+  ✅ risk:{level} 라벨 추가
+  ✅ 분석 결과 코멘트
+  ✅ 위험한 코드 라인에 리뷰 코멘트
+```
+
+### 전통적 자동화 vs Agentic
+
+| PR 변경 내용 | 전통적 자동화 | Agentic (Judgment) |
+|-------------|-------------|-------------------|
+| `networkPolicy` 삭제 | 패턴 매칭 가능하지만 모든 속성을 규칙으로 작성해야 함 | diff를 읽고 "보안 정책 제거"로 판단 |
+| `count: 3` → `count: 1` (prd) | 숫자 비교 규칙 필요 | "운영 환경 노드 축소 = 위험"으로 판단 |
+| `serviceCidr` 변경 | 규칙 없으면 무시 | "immutable 속성 변경 = 클러스터 재생성 필요 = critical"로 판단 |
+| 복합 변경 (네트워크 + SKU + 버전) | 각각 별도 규칙 필요, 종합 판단 불가 | 전체를 종합하여 가장 높은 위험도 적용 |
+
+### ⚙️ 사전 설정 (수동으로 해야 할 것들)
+
+#### 1. 레포에 라벨 생성
+
+GitHub에서 사용할 라벨을 미리 만들어야 한다.
+
+```bash
+# GitHub API로 라벨 생성
+gh api repos/{owner}/{repo}/labels -f name="risk:critical" -f color="B60205" -f description="운영 장애 가능성"
+gh api repos/{owner}/{repo}/labels -f name="risk:high"     -f color="D93F0B" -f description="운영 영향 있음"
+gh api repos/{owner}/{repo}/labels -f name="risk:medium"   -f color="FBCA04" -f description="검토 권장"
+gh api repos/{owner}/{repo}/labels -f name="risk:low"      -f color="0E8A16" -f description="안전한 변경"
+gh api repos/{owner}/{repo}/labels -f name="infra"         -f color="1D76DB" -f description="인프라 변경"
+```
+
+#### 2. Merge 차단 구조 이해
+
+에이전트가 `risk:critical` 라벨을 붙여도 **Agentic Workflow 자체는 성공**으로 끝난다.
+라벨을 부여하는 것이 정상 동작이기 때문이다.
+
+따라서 **라벨만으로는 merge가 차단되지 않는다**.
+실제 차단은 아래 2단계 구조로 동작한다:
+
+```
+① infra-pr-review (Agentic Workflow)
+   → Bicep diff 분석, 위험도 판단
+   → risk:{level} 라벨 부여 + 분석 코멘트
+   → dispatch-workflow로 ②를 실행 (PR 번호 전달)
+   → ✅ 성공 (라벨 부여 자체가 정상 동작)
+
+② check-risk-label (일반 GitHub Actions)
+   → ①이 dispatch로 실행시킴
+   → PR의 라벨을 확인
+   → risk:critical 있으면 exit 1 → ❌ 실패 → merge 차단
+   → risk:critical 없으면       → ✅ 성공 → merge 가능
+```
+
+Ruleset의 "Require status checks"는 ①과 ②가
+**둘 다 성공해야 merge 가능**하도록 강제하는 역할이다:
+- ① 필수 = 에이전트가 분석을 정상 완료했는지 확인
+- ② 필수 = 에이전트의 판단 결과(라벨)에 따른 실제 차단
+
+#### 3. Repository Rulesets 설정
+
+**Settings → Rules → Rulesets → New ruleset**:
+
+```
+Ruleset name: Infra Safety Gate
+Target: Default branch
+Bypass list: (관리자만 bypass 허용)
+
+Rules:
+  ✅ Restrict updates
+  ✅ Require a pull request before merging
+  ✅ Require status checks to pass
+     → Add check: "infra-pr-review"     ← Agentic 분석 완료 확인
+     → Add check: "Check Risk Label"    ← 라벨 기반 merge 차단
+```
+
+> **risk:critical 라벨이 붙은 PR을 merge하려면**:
+> 인프라 팀이 리뷰 후 `risk:critical` 라벨을 제거하고
+> `check-risk-label` 워크플로우를 재실행해야 한다.
+
+#### 4. 컴파일 & 푸시
+
+```bash
+gh aw compile                  # 새 워크플로우 컴파일
+git add .
+git commit -m "Add infra PR risk review workflow"
+git push
+```
+
+#### 5. 테스트
+
+```bash
+# 테스트 브랜치에서 Bicep 파일 수정
+git checkout -b test/infra-change
+# infra/modules/aks.bicep에서 enablePrivateCluster: false 로 변경
+git add . && git commit -m "test: disable private cluster"
+git push -u origin test/infra-change
+
+# PR 생성
+gh pr create --title "test: AKS 네트워크 설정 변경" --body "Private cluster 비활성화 테스트"
+# → 에이전트가 자동으로 risk:critical 라벨 + 분석 코멘트 추가
+```
 
 ---
 

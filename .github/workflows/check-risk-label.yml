@@ -1,0 +1,44 @@
+# ================================================================
+# 라벨 기반 Merge 차단 워크플로우 (일반 GitHub Actions)
+# ================================================================
+# Agentic workflow(infra-pr-review)가 dispatch로 실행시킨다.
+# PR에 risk:critical 라벨이 있으면 실패 → Ruleset에 의해 merge 차단.
+
+name: Check Risk Label
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "PR number to check"
+        required: true
+        type: string
+
+jobs:
+  check-risk-label:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for risk:critical label
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_NUMBER="${{ github.event.inputs.pr_number }}"
+          echo "Checking PR #${PR_NUMBER} for risk:critical label..."
+
+          LABELS=$(gh pr view "$PR_NUMBER" \
+            --repo "${{ github.repository }}" \
+            --json labels \
+            --jq '.labels[].name')
+
+          echo "Labels found: ${LABELS}"
+
+          if echo "$LABELS" | grep -q "risk:critical"; then
+            echo ""
+            echo "❌ risk:critical 라벨이 감지되었습니다."
+            echo "   이 PR은 운영 환경에 심각한 영향을 줄 수 있습니다."
+            echo "   인프라 팀 리뷰 후 라벨을 제거하고 다시 실행하세요."
+            exit 1
+          fi
+
+          echo ""
+          echo "✅ risk:critical 라벨이 없습니다. Merge 가능합니다."
