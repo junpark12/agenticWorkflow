@@ -314,12 +314,23 @@ gh api repos/{owner}/{repo}/labels -f name="infra"         -f color="1D76DB" -f 
 
 ```
 ① infra-pr-review (Agentic Workflow)
+   트리거: on: pull_request (PR 생성 시 자동 실행)
    → Bicep diff 분석, 위험도 판단
    → risk:{level} 라벨 부여 + 분석 코멘트
    → dispatch-workflow로 ②를 실행 (PR 번호 전달)
    → ✅ 성공 (라벨 부여 자체가 정상 동작)
 
 ② check-risk-label (일반 GitHub Actions)
+   트리거: on: workflow_dispatch (①이 dispatch해야만 실행됨)
+   → PR의 라벨을 확인
+   → risk:critical 있으면 exit 1 → ❌ 실패 → merge 차단
+   → risk:critical 없으면       → ✅ 성공 → merge 가능
+```
+
+**실행 순서가 보장되는 이유**:
+②의 트리거가 `on: workflow_dispatch`이므로 PR 이벤트로는 실행되지 않는다.
+반드시 ①이 완료된 후 dispatch해야만 ②가 실행되기 때문에 **항상 ① → ② 순서**로 동작한다.
+②가 실행되는 시점에는 이미 ①이 라벨을 부여한 상태이다.
    → ①이 dispatch로 실행시킴
    → PR의 라벨을 확인
    → risk:critical 있으면 exit 1 → ❌ 실패 → merge 차단
@@ -373,6 +384,106 @@ git push -u origin test/infra-change
 # PR 생성
 gh pr create --title "test: AKS 네트워크 설정 변경" --body "Private cluster 비활성화 테스트"
 # → 에이전트가 자동으로 risk:critical 라벨 + 분석 코멘트 추가
+```
+
+---
+
+## 예제: Summarisation (이슈 히스토리 요약)
+
+"Summarisation"이란 **단순 집계가 아니라 내용을 이해하고 의미 있게 압축**하는 능력이다.
+댓글 수, 날짜 같은 메타데이터만으로는 불가능하고, 논의 흐름의 맥락을 파악해야 한다.
+
+### 시나리오
+
+이슈에 새 담당자(assignee)가 지정되는 순간, 에이전트가 지금까지의 댓글 히스토리를 분석하여
+**신규 담당자가 빠르게 상황을 파악할 수 있는 TL;DR 요약 코멘트**를 자동으로 작성한다.
+
+실제 워크플로우: [`.github/workflows/issue-summary.md`](.github/workflows/issue-summary.md)
+
+### 동작 흐름
+
+```
+이슈에 담당자 지정 (issues: assigned)
+  │
+  ▼
+에이전트가 이슈 본문 + 전체 댓글 읽기
+  │
+  ├─ 댓글 10개 미만? → "요약 생략" 코멘트 후 종료
+  │
+  ▼
+핵심 정보 추출
+  ├─ 문제 정의 (한 줄 요약)
+  ├─ 재현 조건 / 환경
+  ├─ 시도된 해결책 & 결과
+  ├─ 현재 상태 (진행 중 / 블로킹 / 해결 대기)
+  └─ 미결 사항
+  │
+  ├─ CVE 번호 언급? → web-fetch로 nvd.nist.gov 조회
+  ├─ 외부 링크 포함? → web-fetch로 내용 요약
+  └─ 기술 용어 불명확? → web-fetch로 공식 문서 확인
+  │
+  ▼
+safe-outputs:
+  ✅ TL;DR 요약 코멘트 (구조화된 형식)
+```
+
+### 전통적 자동화 vs Agentic
+
+| 상황 | 전통적 자동화 | Agentic (Summarisation) |
+|------|-------------|------------------------|
+| 댓글 50개짜리 이슈 | 댓글 수만 카운트 가능 | 논의 흐름 파악 후 핵심만 추출 |
+| "+1", "same issue" 반복 댓글 | 모두 동일하게 처리 | 중복 댓글 무시하고 의미있는 것만 요약 |
+| 시도된 해결책 추적 | 불가 | "방법 A 시도 → 실패, 방법 B 시도 → 성공" 정리 |
+| CVE 번호가 댓글에 언급됨 | 텍스트로만 표시 | 외부 DB 조회 후 심각도/설명 보강 |
+| 해결된 이슈 | 상태만 확인 | 해결 방법을 첫 번째로 강조 |
+
+### ⚙️ 주요 설정
+
+#### tools
+
+```yaml
+tools:
+  github:
+    toolsets: [default, issues]  # 이슈 댓글 읽기
+  web-fetch: {}                   # 특정 URL 직접 조회
+```
+
+> `web-search`는 copilot 엔진에서 미지원.
+> URL을 알고 있는 경우(CVE, 공식 문서)는 `web-fetch`로 직접 가져온다.
+
+#### network
+
+```yaml
+network:
+  allowed:
+    - defaults
+    - github                      # 에코시스템 식별자 (github.com 전체)
+    - "nvd.nist.gov"              # CVE 정보
+    - "learn.microsoft.com"       # Azure 공식 문서
+    - "kubernetes.io"             # K8s 공식 문서
+```
+
+> 개별 도메인 대신 에코시스템 식별자(`github`) 사용 권장 — 컴파일러 경고 방지.
+
+#### 허용 expressions
+
+`github.event.assignee.login`은 허용 목록에 없어 사용 불가.
+담당자 정보는 `github.actor`(이벤트를 트리거한 사람)로 대체.
+
+```yaml
+# ❌ 컴파일 에러
+새로 배정된 담당자: `${{ github.event.assignee.login }}`
+
+# ✅ 허용
+새로 배정된 담당자: `${{ github.actor }}`
+```
+
+#### 4. 테스트
+
+```bash
+# 댓글 10개 이상인 이슈에 담당자 지정
+gh issue edit {issue_number} --add-assignee {username}
+# → 에이전트가 자동으로 TL;DR 요약 코멘트 추가
 ```
 
 ---
