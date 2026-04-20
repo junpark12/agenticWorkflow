@@ -33,15 +33,12 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-01-01' = {
     kubernetesVersion: '1.29'
 
     // ── 네트워크 설정 ──
-    // ⚠️ 위험: VNet 서브넷(10.10.0.0/16)과 podCidr(10.10.0.0/16)이 겹침
-    //          serviceCidr(10.10.1.0/24)도 podCidr 범위 안에 포함되어 있음
-    //          → Pod 통신 장애, DNS 오작동, 클러스터 배포 실패 가능성
     networkProfile: {
       networkPlugin: 'azure'
       networkPolicy: 'calico'
-      podCidr: '10.10.0.0/16'         // VNet 서브넷(10.10.0.0/16)과 동일 대역 - 충돌!
-      serviceCidr: '10.10.1.0/24'     // podCidr 범위(10.10.0.0/16) 안에 포함됨 - 충돌!
-      dnsServiceIP: '10.10.1.10'      // serviceCidr과 일치하나 podCidr과 겹치는 구간
+      podCidr: '10.10.0.0/16'
+      serviceCidr: '10.10.1.0/24'
+      dnsServiceIP: '10.10.1.10'
       loadBalancerSku: 'standard'
       outboundType: 'loadBalancer'
     }
@@ -58,7 +55,7 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-01-01' = {
         enableAutoScaling: environment == 'prd'
         minCount: environment == 'prd' ? 2 : null
         maxCount: environment == 'prd' ? 5 : null
-        vnetSubnetID: subnetId != '' ? subnetId : null   // VNet: 10.10.0.0/16
+        vnetSubnetID: subnetId != '' ? subnetId : null
       }
     ]
 
