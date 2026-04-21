@@ -24,6 +24,28 @@ module acr 'modules/acr.bicep' = {
   }
 }
 
+// VNet 설정
+var vnetAddressPrefix = '10.10.0.0/16'
+var subnetPrefix = '10.10.0.0/24'
+
+resource vnet 'Microsoft.Network/virtualNetworks@2023-09-01' = {
+  name: 'vnet-${projectName}-${environment}'
+  location: location
+  properties: {
+    addressSpace: {
+      addressPrefixes: [vnetAddressPrefix]
+    }
+    subnets: [
+      {
+        name: 'aks-subnet'
+        properties: {
+          addressPrefix: subnetPrefix
+        }
+      }
+    ]
+  }
+}
+
 // ── AKS Cluster ──
 module aks 'modules/aks.bicep' = {
   name: 'aks-${environment}'
@@ -32,6 +54,7 @@ module aks 'modules/aks.bicep' = {
     location: location
     environment: environment
     acrId: acr.outputs.acrId
+    subnetId: vnet.properties.subnets[0].id
   }
 }
 

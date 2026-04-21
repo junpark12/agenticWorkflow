@@ -15,6 +15,9 @@ param environment string
 @description('ACR 리소스 ID (이미지 풀 권한용)')
 param acrId string
 
+@description('VNet 서브넷 리소스 ID')
+param subnetId string = ''
+
 // 환경별 설정
 var nodeCount = environment == 'prd' ? 3 : 1
 var vmSize = environment == 'prd' ? 'Standard_D4s_v5' : 'Standard_D2s_v5'
@@ -33,9 +36,11 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-01-01' = {
     networkProfile: {
       networkPlugin: 'azure'
       networkPolicy: 'calico'
-      serviceCidr: '10.0.0.0/16'
-      dnsServiceIP: '10.0.0.10'
+      podCidr: '10.10.0.0/16'
+      serviceCidr: '10.10.1.0/24'
+      dnsServiceIP: '10.10.1.10'
       loadBalancerSku: 'standard'
+      outboundType: 'loadBalancer'
     }
 
     // ── 노드 풀 ──
@@ -50,6 +55,7 @@ resource aks 'Microsoft.ContainerService/managedClusters@2024-01-01' = {
         enableAutoScaling: environment == 'prd'
         minCount: environment == 'prd' ? 2 : null
         maxCount: environment == 'prd' ? 5 : null
+        vnetSubnetID: subnetId != '' ? subnetId : null
       }
     ]
 
